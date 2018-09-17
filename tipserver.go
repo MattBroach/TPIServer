@@ -11,9 +11,14 @@ import (
     "sync"
     "errors"
     "os"
-    //"bytes"
+    "bytes"
 
     "github.com/dgrijalva/jwt-go"
+
+    "github.com/aws/aws-sdk-go/aws"
+    "github.com/aws/aws-sdk-go/aws/session"
+    "github.com/aws/aws-sdk-go/aws/credentials"
+    "github.com/aws/aws-sdk-go/service/s3"
 )
 
 type Update struct {
@@ -36,17 +41,19 @@ type TokenClaims struct {
 
 const (
     updatePeriod = time.Second * 5
+    S3_REGION = "us-east-1"
+    S3_BUCKET = "plays-itself-filters"
+    S3_KEY = "filters.json"
+    tokenPrefix = "Bearer "
     tokenDuration = 30
     twitchID = "207678528"
     twitchRole = "external"
-    tokenPrefix = "Bearer "
 )
 
 var (
     port = flag.String("port", "8001", "port to serve app on")
-    postTarget = flag.String("target", "http://localhost:8001", "server to post to")
-    tokenSecret = flag.String("secret", "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk", "JWT Secret")
     store = Store{values: make(map[string]*Update)}
+    tokenSecret = flag.String("secret", "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk", "JWT Secret")
 )
 
 
@@ -125,6 +132,15 @@ func updateData() {
         updateTicker.Stop()
     }()
 
+    sess, err := session.NewSession(&aws.Config{
+        Region: aws.String(S3_REGION),
+        Credentials: credentials.NewSharedCredentials("", "twitch-plays"),
+    })
+    if err != nil {
+        log.Println(err)
+        return
+    }
+
     for {
         <-updateTicker.C
 
@@ -134,19 +150,28 @@ func updateData() {
             return
         }
         
-        //resp, err := http.Post(postTarget, "application/json", bytes.NewBuffer(jsonString))
-        //if err != nil {
-            //log.Println(err)
-            //return
-        //}
-        
         os.Stdout.Write(jsonString)
+        buffer := bytes.NewBuffer(jsonString)
+
+        _, err = s3.New(sess).PutObject(&s3.PutObjectInput{
+            Bucket:               aws.String(S3_BUCKET),
+            Key:                  aws.String(S3_KEY),
+            ACL:                  aws.String("private"),
+            Body:                 bytes.NewReader(buffer.Bytes()),
+            ContentLength:        aws.Int64(int64(len(buffer.Bytes()))),
+            ContentType:          aws.String("application/json"),
+            ContentDisposition:   aws.String("attachment"),
+            ServerSideEncryption: aws.String("AES256"),
+        })
+        if err != nil {
+            log.Println(err)
+            return
+        }
     }
 }
 
 func main() {
     http.HandleFunc("/update/",  serveIngest)
-    //http.HandleFunc("/init/", serveConsume)
 
     go updateData()
 
